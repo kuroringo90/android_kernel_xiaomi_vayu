@@ -31,11 +31,13 @@
 
 &clock_cpucc {
 	qcom,cpufreq-table-0 =
+		<403200>,
 		<576000>,
 		<1708800>,
 		<1785600>;
 
 	qcom,cpufreq-table-4 =
+		<710400>,
 		<825600>,
 		<1401600>,
 		<1708800>,
@@ -46,6 +48,7 @@
 		<2419200>;
 
 	qcom,cpufreq-table-7 =
+		<825600>,
 		<940800>,
 		<1497600>,
 		<1804800>,
@@ -447,6 +450,7 @@
 &energy_costs {
 	CPU_COST_0: core-cost0 {
 		busy-cost-data = <
+			403200   57
 			576000  83
 			1708800  137
 			1785600  146
@@ -458,6 +462,7 @@
 
 	CPU_COST_1: core-cost1 {
 		busy-cost-data = <
+			710400  126
 			825600   206
 			1401600  311
 			1708800  398
@@ -474,6 +479,7 @@
 
 	CPU_COST_2: core-cost2 {
 		busy-cost-data = <
+			825600  158
 			940800   269
 			1497600  365			
 			1804800  446
@@ -491,7 +497,8 @@
 
 	CLUSTER_COST_0: cluster-cost0 {
 		busy-cost-data = <
-			576000   4
+			403200    4
+			576000    5
 			1708800   16
 			1785600   17
 		>;
@@ -502,6 +509,7 @@
 
 	CLUSTER_COST_1: cluster-cost1 {
 		busy-cost-data = <
+			710400   25
 			825600    26
 			1401600   32
 			1708800   40
@@ -518,6 +526,7 @@
 
 	CLUSTER_COST_2: cluster-cost2 {
 		busy-cost-data = <
+			825600   30
 			940800    33
 			1497600   49
 			1804800   77
