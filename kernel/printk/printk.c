@@ -629,7 +629,7 @@ static int log_store(int facility, int level,
 	if (ts_nsec > 0)
 		msg->ts_nsec = ts_nsec;
 	else
-		msg->ts_nsec = local_clock();
+		msg->ts_nsec = local_clock() + get_total_sleep_time_nsec();
 	memset(log_dict(msg) + dict_len, 0, pad_len);
 	msg->len = size;
 
@@ -768,6 +768,9 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 	size_t len = iov_iter_count(from);
 	ssize_t ret = len;
 
+	/* Don't allow userspace to write to /dev/kmesg */
+	return len;
+
 	if (!user || len > LOG_LINE_MAX)
 		return -EINVAL;
 
@@ -786,10 +789,8 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 		return -ENOMEM;
 
 	buf[len] = '\0';
-	if (!copy_from_iter_full(buf, len, from)) {
-		kfree(buf);
+	if (!copy_from_iter_full(buf, len, from))
 		return -EFAULT;
-	}
 
 	/*
 	 * Extract and skip the syslog prefix <[0-9]*>. Coming from userspace
@@ -802,6 +803,9 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 	 */
 	line = buf;
 	if (line[0] == '<') {
+		if (memcmp(line+3, "batteryd", sizeof("batteryd")-1) == 0 ||
+			   memcmp(line+3, "healthd", sizeof("healthd")-1) == 0)
+			goto ignore;
 		char *endp = NULL;
 		unsigned int u;
 
@@ -813,10 +817,19 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 			endp++;
 			len -= endp - line;
 			line = endp;
+			if(strncmp(line, "logd: Skipping", sizeof("logd: Skipping")))
+				goto ignore;
 		}
 	}
 
+	if ((strstr(line, "healthd")) || (strstr(line, "logd")) ||
+		 strstr(line, "dashd")) {
+		kfree(buf);
+		return len;
+	}
+
 	printk_emit(facility, level, NULL, 0, "%s", line);
+ignore:
 	kfree(buf);
 	return ret;
 }
@@ -1087,11 +1100,11 @@ static void __init log_buf_add_cpu(void)
 	if (cpu_extra <= __LOG_BUF_LEN / 2)
 		return;
 
-	pr_info("log_buf_len individual max cpu contribution: %d bytes\n",
+	pr_debug("log_buf_len individual max cpu contribution: %d bytes\n",
 		__LOG_CPU_MAX_BUF_LEN);
-	pr_info("log_buf_len total cpu_extra contributions: %d bytes\n",
+	pr_debug("log_buf_len total cpu_extra contributions: %d bytes\n",
 		cpu_extra);
-	pr_info("log_buf_len min size: %d bytes\n", __LOG_BUF_LEN);
+	pr_debug("log_buf_len min size: %d bytes\n", __LOG_BUF_LEN);
 
 	log_buf_len_update(cpu_extra + __LOG_BUF_LEN);
 }
@@ -1136,8 +1149,8 @@ void __init setup_log_buf(int early)
 	memcpy(log_buf, __log_buf, __LOG_BUF_LEN);
 	logbuf_unlock_irqrestore(flags);
 
-	pr_info("log_buf_len: %u bytes\n", log_buf_len);
-	pr_info("early log buf free: %u(%u%%)\n",
+	pr_debug("log_buf_len: %u bytes\n", log_buf_len);
+	pr_debug("early log buf free: %u(%u%%)\n",
 		free, (free * 100) / __LOG_BUF_LEN);
 }
 
@@ -1146,7 +1159,7 @@ static bool __read_mostly ignore_loglevel;
 static int __init ignore_loglevel_setup(char *str)
 {
 	ignore_loglevel = true;
-	pr_info("debug: ignoring loglevel setting.\n");
+	pr_debug("debug: ignoring loglevel setting.\n");
 
 	return 0;
 }
@@ -1226,6 +1239,7 @@ static size_t print_time(u64 ts, char *buf)
 	if (!printk_time)
 		return 0;
 
+	ts += get_total_sleep_time_nsec();
 	rem_nsec = do_div(ts, 1000000000);
 
 	if (!buf)
@@ -1786,7 +1800,7 @@ static bool cont_add(int facility, int level, enum log_flags flags, const char *
 		cont.facility = facility;
 		cont.level = level;
 		cont.owner = current;
-		cont.ts_nsec = local_clock();
+		cont.ts_nsec = local_clock() + get_total_sleep_time_nsec();
 		cont.flags = flags;
 	}
 
@@ -2185,7 +2199,6 @@ void suspend_console(void)
 {
 	if (!console_suspend_enabled)
 		return;
-	printk("Suspending console(s) (use no_console_suspend to debug)\n");
 	console_lock();
 	console_suspended = 1;
 	up_console_sem();
@@ -2563,7 +2576,7 @@ static int __read_mostly keep_bootcon;
 static int __init keep_bootcon_setup(char *str)
 {
 	keep_bootcon = 1;
-	pr_info("debug: skip boot console de-registration.\n");
+	pr_debug("debug: skip boot console de-registration.\n");
 
 	return 0;
 }
@@ -2612,7 +2625,7 @@ void register_console(struct console *newcon)
 		/* find the last or real console */
 		for_each_console(bcon) {
 			if (!(bcon->flags & CON_BOOT)) {
-				pr_info("Too late to register bootconsole %s%d\n",
+				pr_debug("Too late to register bootconsole %s%d\n",
 					newcon->name, newcon->index);
 				return;
 			}
@@ -2707,7 +2720,7 @@ void register_console(struct console *newcon)
 
 	if (newcon->flags & CON_EXTENDED)
 		if (!nr_ext_console_drivers++)
-			pr_info("printk: continuation disabled due to ext consoles, expect more fragments in /dev/kmsg\n");
+			pr_debug("printk: continuation disabled due to ext consoles, expect more fragments in /dev/kmsg\n");
 
 	if (newcon->flags & CON_PRINTBUFFER) {
 		/*
@@ -2735,7 +2748,7 @@ void register_console(struct console *newcon)
 	 * users know there might be something in the kernel's log buffer that
 	 * went to the bootconsole (that they do not see on the real console)
 	 */
-	pr_info("%sconsole [%s%d] enabled\n",
+	pr_debug("%sconsole [%s%d] enabled\n",
 		(newcon->flags & CON_BOOT) ? "boot" : "" ,
 		newcon->name, newcon->index);
 	if (bcon &&
@@ -2756,7 +2769,7 @@ int unregister_console(struct console *console)
         struct console *a, *b;
 	int res;
 
-	pr_info("%sconsole [%s%d] disabled\n",
+	pr_debug("%sconsole [%s%d] disabled\n",
 		(console->flags & CON_BOOT) ? "boot" : "" ,
 		console->name, console->index);
 

@@ -5,6 +5,10 @@
  *
  *  Copyright (C) 1991-2002  Linus Torvalds
  */
+#ifdef CONFIG_MINIMAL_TRACING_FOR_IORAP
+#undef NOTRACE
+#endif
+
 #include <linux/sched.h>
 #include <linux/sched/clock.h>
 #include <uapi/linux/sched/types.h>
@@ -34,7 +38,6 @@
 #include <linux/kthread.h>
 
 #include <asm/switch_to.h>
-#include <linux/msm_rtb.h>
 #include <asm/tlb.h>
 #ifdef CONFIG_PARAVIRT
 #include <asm/paravirt.h>
@@ -275,8 +278,9 @@ static enum hrtimer_restart hrtick(struct hrtimer *timer)
 static void __hrtick_restart(struct rq *rq)
 {
 	struct hrtimer *timer = &rq->hrtick_timer;
+	ktime_t time = rq->hrtick_time;
 
-	hrtimer_start_expires(timer, HRTIMER_MODE_ABS_PINNED);
+	hrtimer_start(timer, time, HRTIMER_MODE_ABS_PINNED);
 }
 
 /*
@@ -301,7 +305,6 @@ static void __hrtick_start(void *arg)
 void hrtick_start(struct rq *rq, u64 delay)
 {
 	struct hrtimer *timer = &rq->hrtick_timer;
-	ktime_t time;
 	s64 delta;
 
 	/*
@@ -309,9 +312,7 @@ void hrtick_start(struct rq *rq, u64 delay)
 	 * doesn't make sense and can cause timer DoS.
 	 */
 	delta = max_t(s64, delay, 10000LL);
-	time = ktime_add_ns(timer->base->get_time(), delta);
-
-	hrtimer_set_expires(timer, time);
+	rq->hrtick_time = ktime_add_ns(timer->base->get_time(), delta);
 
 	if (rq == this_rq()) {
 		__hrtick_restart(rq);
@@ -1120,6 +1121,11 @@ static int __set_cpus_allowed_ptr(struct task_struct *p,
 	int ret = 0;
 	cpumask_t allowed_mask;
 
+	/* Don't allow perf-critical threads to have non-perf affinities */
+	if ((p->flags & PF_PERF_CRITICAL) && new_mask != cpu_lp_mask &&
+	    new_mask != cpu_perf_mask && new_mask != cpu_prime_mask)
+		return -EINVAL;
+
 	rq = task_rq_lock(p, &rf);
 	update_rq_clock(rq);
 
@@ -1364,6 +1370,47 @@ int migrate_swap(struct task_struct *cur, struct task_struct *p)
 
 out:
 	return ret;
+}
+
+/*
+ * Calls to sched_migrate_to_cpumask_start() cannot nest. This can only be used
+ * in process context.
+ */
+void sched_migrate_to_cpumask_start(struct cpumask *old_mask,
+				    const struct cpumask *dest)
+{
+	struct task_struct *p = current;
+
+	raw_spin_lock_irq(&p->pi_lock);
+	*cpumask_bits(old_mask) = *cpumask_bits(&p->cpus_allowed);
+	raw_spin_unlock_irq(&p->pi_lock);
+
+	/*
+	 * This will force the current task onto the destination cpumask. It
+	 * will sleep when a migration to another CPU is actually needed.
+	 */
+	set_cpus_allowed_ptr(p, dest);
+}
+
+void sched_migrate_to_cpumask_end(const struct cpumask *old_mask,
+				  const struct cpumask *dest)
+{
+	struct task_struct *p = current;
+
+	/*
+	 * Check that cpus_allowed didn't change from what it was temporarily
+	 * set to earlier. If so, we can go ahead and lazily restore the old
+	 * cpumask. There's no need to immediately migrate right now.
+	 */
+	raw_spin_lock_irq(&p->pi_lock);
+	if (*cpumask_bits(&p->cpus_allowed) == *cpumask_bits(dest)) {
+		struct rq *rq = this_rq();
+
+		raw_spin_lock(&rq->lock);
+		do_set_cpus_allowed(p, old_mask);
+		raw_spin_unlock(&rq->lock);
+	}
+	raw_spin_unlock_irq(&p->pi_lock);
 }
 
 /*
@@ -2732,6 +2779,50 @@ prepare_task_switch(struct rq *rq, struct task_struct *prev,
 	prepare_arch_switch(next);
 }
 
+void release_task_stack(struct task_struct *tsk);
+static void task_async_free(struct work_struct *work)
+{
+	struct task_struct *t = container_of(work, typeof(*t), async_free.work);
+	bool free_stack = READ_ONCE(t->async_free.free_stack);
+
+	atomic_set(&t->async_free.running, 0);
+
+	if (free_stack) {
+		release_task_stack(t);
+		put_task_struct(t);
+	} else {
+		__put_task_struct(t);
+	}
+}
+
+static void finish_task_switch_dead(struct task_struct *prev)
+{
+	if (atomic_cmpxchg(&prev->async_free.running, 0, 1)) {
+		put_task_stack(prev);
+		put_task_struct(prev);
+		return;
+	}
+
+	if (atomic_dec_and_test(&prev->stack_refcount)) {
+		prev->async_free.free_stack = true;
+	} else if (atomic_dec_and_test(&prev->usage)) {
+		prev->async_free.free_stack = false;
+	} else {
+		atomic_set(&prev->async_free.running, 0);
+		return;
+	}
+
+	INIT_WORK(&prev->async_free.work, task_async_free);
+	queue_work(system_unbound_wq, &prev->async_free.work);
+}
+
+static void mmdrop_async_free(struct work_struct *work)
+{
+	struct mm_struct *mm = container_of(work, typeof(*mm), async_put_work);
+
+	__mmdrop(mm);
+}
+
 /**
  * finish_task_switch - clean up after a task-switch
  * @prev: the thread we just switched away from.
@@ -2805,8 +2896,10 @@ static struct rq *finish_task_switch(struct task_struct *prev)
 	kcov_finish_switch(current);
 
 	fire_sched_in_preempt_notifiers(current);
-	if (mm)
-		mmdrop(mm);
+	if (mm && atomic_dec_and_test(&mm->mm_count)) {
+		INIT_WORK(&mm->async_put_work, mmdrop_async_free);
+		queue_work(system_unbound_wq, &mm->async_put_work);
+	}
 	if (unlikely(prev_state  == TASK_DEAD)) {
 			if (prev->sched_class->task_dead)
 				prev->sched_class->task_dead(prev);
@@ -2817,11 +2910,7 @@ static struct rq *finish_task_switch(struct task_struct *prev)
 			 */
 			kprobe_flush_task(prev);
 
-			/* Task is done with its stack. */
-			put_task_stack(prev);
-
-			put_task_struct(prev);
-
+			finish_task_switch_dead(prev);
 	}
 
 	tick_nohz_task_switch();
@@ -2915,8 +3004,10 @@ context_switch(struct rq *rq, struct task_struct *prev,
 		next->active_mm = oldmm;
 		mmgrab(oldmm);
 		enter_lazy_tlb(oldmm, next);
-	} else
+	} else {
 		switch_mm_irqs_off(oldmm, mm, next);
+		lru_gen_switch_mm(oldmm, mm);
+	}
 
 	if (!prev->mm) {
 		prev->active_mm = NULL;
@@ -2933,7 +3024,7 @@ context_switch(struct rq *rq, struct task_struct *prev,
 	 */
 	rq_unpin_lock(rq, rf);
 	spin_release(&rq->lock.dep_map, 1, _THIS_IP_);
-	uncached_logk(LOGK_CTXID, (void *)(u64)next->pid);
+
 	/* Here we just switch the register state and the stack. */
 	switch_to(prev, next, prev);
 	barrier();
@@ -3781,7 +3872,16 @@ asmlinkage __visible void __sched notrace preempt_schedule_notrace(void)
 		 * an infinite recursion.
 		 */
 		prev_ctx = exception_enter();
+		/*
+		 * The add/subtract must not be traced by the function
+		 * tracer. But we still want to account for the
+		 * preempt off latency tracer. Since the _notrace versions
+		 * of add/subtract skip the accounting for latency tracer
+		 * we must force it manually.
+		 */
+		start_critical_timings();
 		__schedule(true);
+		stop_critical_timings();
 		exception_exit(prev_ctx);
 
 		preempt_latency_stop(1);
@@ -5128,6 +5228,7 @@ int __sched _cond_resched(void)
 		preempt_schedule_common();
 		return 1;
 	}
+	rcu_all_qs();
 	return 0;
 }
 EXPORT_SYMBOL(_cond_resched);
@@ -5451,6 +5552,7 @@ void sched_show_task(struct task_struct *p)
 	show_stack(p, NULL);
 	put_task_stack(p);
 }
+EXPORT_SYMBOL_GPL(sched_show_task);
 
 static inline bool
 state_filter_match(unsigned long state_filter, struct task_struct *p)
@@ -5687,6 +5789,7 @@ void idle_task_exit(void)
 
 	if (mm != &init_mm) {
 		switch_mm(mm, &init_mm, current);
+		lru_gen_switch_mm(mm, &init_mm);
 		finish_arch_post_lock_switch();
 	}
 	mmdrop(mm);
@@ -6234,10 +6337,6 @@ int sched_cpu_deactivate(unsigned int cpu)
 	 *
 	 * Do sync before park smpboot threads to take care the rcu boost case.
 	 */
-
-#ifdef CONFIG_PREEMPT
-	synchronize_sched();
-#endif
 	synchronize_rcu();
 
 #ifdef CONFIG_SCHED_SMT

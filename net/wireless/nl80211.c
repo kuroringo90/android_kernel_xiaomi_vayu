@@ -1888,10 +1888,7 @@ static int nl80211_send_wiphy(struct cfg80211_registered_device *rdev,
 		 * case we'll continue with more data in the next round,
 		 * but break unconditionally so unsplit data stops here.
 		 */
-		if (state->split)
-			state->split_start++;
-		else
-			state->split_start = 0;
+		state->split_start++;
 		break;
 	case 9:
 		if (rdev->wiphy.extended_capabilities &&
@@ -14651,7 +14648,7 @@ static bool __nl80211_unexpected_frame(struct net_device *dev, u8 cmd,
 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
 	struct sk_buff *msg;
 	void *hdr;
-	u32 nlportid = ACCESS_ONCE(wdev->ap_unexpected_nlportid);
+	u32 nlportid = READ_ONCE(wdev->ap_unexpected_nlportid);
 
 	if (!nlportid)
 		return false;

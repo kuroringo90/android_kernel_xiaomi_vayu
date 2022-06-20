@@ -21,6 +21,7 @@
 #include <video/mipi_display.h>
 
 #include "dsi_panel.h"
+#include "dsi_display.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_parser.h"
 
@@ -435,11 +436,14 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 {
 	int rc = 0;
 
+	if (!panel->tddi_doubleclick_flag || panel->panel_dead_flag)
 	rc = dsi_pwr_enable_regulator(&panel->power_info, true);
 	if (rc) {
 		pr_err("[%s] failed to enable vregs, rc=%d\n", panel->name, rc);
 		goto exit;
 	}
+	else
+		panel->panel_dead_flag = false;
 
 	rc = dsi_panel_set_pinctrl_state(panel, true);
 	if (rc) {
@@ -478,6 +482,7 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 	if (gpio_is_valid(panel->reset_config.disp_en_gpio))
 		gpio_set_value(panel->reset_config.disp_en_gpio, 0);
 
+	if (!panel->tddi_doubleclick_flag  || panel->panel_dead_flag)
 	if (gpio_is_valid(panel->reset_config.reset_gpio))
 		gpio_set_value(panel->reset_config.reset_gpio, 0);
 
@@ -490,6 +495,7 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 		       rc);
 	}
 
+	if(!panel->tddi_doubleclick_flag || panel->panel_dead_flag)
 	rc = dsi_pwr_enable_regulator(&panel->power_info, false);
 	if (rc)
 		pr_err("[%s] failed to enable vregs, rc=%d\n", panel->name, rc);
@@ -1406,6 +1412,29 @@ static int dsi_panel_parse_dyn_clk_caps(struct dsi_panel *panel)
 	return 0;
 }
 
+unsigned int __read_mostly dfps_list_size = 0;
+static int __init read_dfps_list_size(char *s)
+{
+	if (s)
+		dfps_list_size = simple_strtoul(s, NULL, 0);
+	return 1;
+}
+__setup("dfps.list_size=", read_dfps_list_size);
+
+char *dfps_list_custom[10];
+static int __init read_dfps_list(char *input)
+{
+	#define bufsz 40
+	int i;
+	char buf[bufsz], *sptr = buf, *token, *res[10], *delim = ",";
+	strcpy(buf, input);
+	for (i = 0; i < bufsz; i++)
+		if ((token = strsep(&sptr, delim)))
+			dfps_list_custom[i] = token;
+	return 1;
+}
+__setup("dfps.list=", read_dfps_list);
+
 static int dsi_panel_parse_dfps_caps(struct dsi_panel *panel)
 {
 	int rc = 0;
@@ -1414,7 +1443,8 @@ static int dsi_panel_parse_dfps_caps(struct dsi_panel *panel)
 	struct dsi_parser_utils *utils = &panel->utils;
 	const char *name = panel->name;
 	const char *type;
-	u32 i;
+	u32 i, value;
+	int j;
 
 	supported = utils->read_bool(utils->data,
 			"qcom,mdss-dsi-pan-enable-dynamic-fps");
@@ -1445,12 +1475,17 @@ static int dsi_panel_parse_dfps_caps(struct dsi_panel *panel)
 		goto error;
 	}
 
-	dfps_caps->dfps_list_len = utils->count_u32_elems(utils->data,
-				  "qcom,dsi-supported-dfps-list");
-	if (dfps_caps->dfps_list_len < 1) {
-		pr_err("[%s] dfps refresh list not present\n", name);
-		rc = -EINVAL;
-		goto error;
+	if (!dfps_list_size) {
+		dfps_caps->dfps_list_len = utils->count_u32_elems(utils->data,
+					"qcom,dsi-supported-dfps-list");
+		if (dfps_caps->dfps_list_len < 1) {
+			pr_err("[%s] dfps refresh list not present\n", name);
+			rc = -EINVAL;
+			goto error;
+		}
+	} else {
+		dfps_caps->dfps_list_len = dfps_list_size;
+		pr_info("DEBUG :: %s:%d :: OVERRIDE dfps_caps->dfps_list_len = %d", __func__, __LINE__, dfps_list_size);
 	}
 
 	dfps_caps->dfps_list = kcalloc(dfps_caps->dfps_list_len, sizeof(u32),
@@ -1460,14 +1495,23 @@ static int dsi_panel_parse_dfps_caps(struct dsi_panel *panel)
 		goto error;
 	}
 
-	rc = utils->read_u32_array(utils->data,
-			"qcom,dsi-supported-dfps-list",
-			dfps_caps->dfps_list,
-			dfps_caps->dfps_list_len);
-	if (rc) {
-		pr_err("[%s] dfps refresh rate list parse failed\n", name);
-		rc = -EINVAL;
-		goto error;
+	if (!dfps_list_size) {
+		rc = utils->read_u32_array(utils->data,
+				"qcom,dsi-supported-dfps-list",
+				dfps_caps->dfps_list,
+				dfps_caps->dfps_list_len);
+		if (rc) {
+			pr_err("[%s] dfps refresh rate list parse failed\n", name);
+			rc = -EINVAL;
+			goto error;
+		}
+	} else {
+		for (j = 0; j < dfps_list_size; j++) {
+			if (!kstrtou32(dfps_list_custom[j], 0, &value)) {
+				dfps_caps->dfps_list[j] = value;
+				pr_info("DEBUG :: %s:%d :: OVERRIDE dfps_caps->dfps_list[%d] = %u", __func__, __LINE__, j, value);
+			}
+		}
 	}
 	dfps_caps->dfps_support = true;
 
@@ -1677,6 +1721,14 @@ error:
 	return rc;
 }
 
+static int __initdata phyd_mult = -1;
+static int __init _setup_phyd_mult(char *str)
+{
+	get_option(&str, &phyd_mult);
+	return 0;
+}
+early_param("msm_dsi.phyd_multiplier", _setup_phyd_mult);
+
 static int dsi_panel_parse_phy_props(struct dsi_panel *panel)
 {
 	int rc = 0;
@@ -1705,6 +1757,11 @@ static int dsi_panel_parse_phy_props(struct dsi_panel *panel)
 		rc = 0;
 	} else {
 		props->panel_height_mm = val;
+	}
+
+	if (phyd_mult > 0 && props->panel_width_mm && props->panel_height_mm) {
+		props->panel_width_mm *= phyd_mult;
+		props->panel_height_mm *= phyd_mult;
 	}
 
 	str = utils->get_property(utils->data,
@@ -1749,6 +1806,13 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command",
 	"qcom,mdss-dsi-qsync-on-commands",
 	"qcom,mdss-dsi-qsync-off-commands",
+	"qcom,mdss-dsi-dispparam-lcd-hbm-l1-on-command",
+	"qcom,mdss-dsi-dispparam-lcd-hbm-l2-on-command",
+	"qcom,mdss-dsi-dispparam-lcd-hbm-off-command",
+	"qcom,mdss-dsi-dispparam-cabcuion-command",
+	"qcom,mdss-dsi-dispparam-cabcstillon-command",
+	"qcom,mdss-dsi-dispparam-cabcmovieon-command",
+	"qcom,mdss-dsi-dispparam-cabcoff-command",
 };
 
 const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
@@ -1775,6 +1839,13 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command-state",
 	"qcom,mdss-dsi-qsync-on-commands-state",
 	"qcom,mdss-dsi-qsync-off-commands-state",
+	"qcom,mdss-dsi-dispparam-lcd-hbm-l1-on-command-state",
+	"qcom,mdss-dsi-dispparam-lcd-hbm-l2-on-command-state",
+	"qcom,mdss-dsi-dispparam-lcd-hbm-off-command-state",
+	"qcom,mdss-dsi-dispparam-cabcuion-command-state",
+	"qcom,mdss-dsi-dispparam-cabcstillon-command-state",
+	"qcom,mdss-dsi-dispparam-cabcmovieon-command-state",
+	"qcom,mdss-dsi-dispparam-cabcoff-command-state",
 };
 
 static int dsi_panel_get_cmd_pkt_count(const char *data, u32 length, u32 *cnt)
@@ -3374,6 +3445,8 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 	if (rc)
 		pr_debug("failed to parse esd config, rc=%d\n", rc);
 
+	panel->tddi_doubleclick_flag = false;
+	panel->panel_dead_flag = false;
 	panel->power_mode = SDE_MODE_DPMS_OFF;
 	drm_panel_init(&panel->drm_panel);
 	mutex_init(&panel->panel_lock);
@@ -4264,6 +4337,13 @@ int dsi_panel_enable(struct dsi_panel *panel)
 	else
 		panel->panel_initialized = true;
 	mutex_unlock(&panel->panel_lock);
+
+	if (panel->hbm_mode)
+		dsi_panel_apply_hbm_mode(panel);
+
+	if (panel->cabc_mode)
+		dsi_panel_apply_cabc_mode(panel);
+
 	return rc;
 }
 
@@ -4325,6 +4405,7 @@ int dsi_panel_disable(struct dsi_panel *panel)
 
 	/* Avoid sending panel off commands when ESD recovery is underway */
 	if (!atomic_read(&panel->esd_recovery_pending)) {
+		panel->panel_initialized = false;
 		/*
 		 * Need to set IBB/AB regulator mode to STANDBY,
 		 * if panel is going off from AOD mode.
@@ -4397,5 +4478,61 @@ int dsi_panel_post_unprepare(struct dsi_panel *panel)
 	}
 error:
 	mutex_unlock(&panel->panel_lock);
+	return rc;
+}
+
+void dsi_panel_doubleclick_enable(bool on) {
+	struct dsi_display *primary_display = get_main_display();
+	if (primary_display && primary_display->panel)
+		primary_display->panel->tddi_doubleclick_flag = on;
+}
+EXPORT_SYMBOL(dsi_panel_doubleclick_enable);
+
+int dsi_panel_apply_hbm_mode(struct dsi_panel *panel)
+{
+	static const enum dsi_cmd_set_type type_map[] = {
+		DSI_CMD_SET_DISP_LCD_HBM_OFF,
+		DSI_CMD_SET_DISP_LCD_HBM_L1_ON,
+		DSI_CMD_SET_DISP_LCD_HBM_L2_ON
+	};
+
+	enum dsi_cmd_set_type type;
+	int rc;
+
+	if (panel->hbm_mode >= 0 &&
+		panel->hbm_mode < ARRAY_SIZE(type_map))
+		type = type_map[panel->hbm_mode];
+	else
+		type = type_map[0];
+
+	mutex_lock(&panel->panel_lock);
+	rc = dsi_panel_tx_cmd_set(panel, type);
+	mutex_unlock(&panel->panel_lock);
+
+	return rc;
+}
+
+int dsi_panel_apply_cabc_mode(struct dsi_panel *panel)
+{
+	static const enum dsi_cmd_set_type type_map[] = {
+		DSI_CMD_SET_DISP_CABC_OFF,
+		DSI_CMD_SET_DISP_CABC_UI_ON,
+		DSI_CMD_SET_DISP_CABC_STILL_ON,
+		DSI_CMD_SET_DISP_CABC_MOVIE_ON
+	};
+
+	enum dsi_cmd_set_type type;
+	int rc;
+
+	if (panel->cabc_mode >= 0 &&
+		panel->cabc_mode < ARRAY_SIZE(type_map))
+		type = type_map[panel->cabc_mode];
+	else
+		type = type_map[0];
+
+	mutex_lock(&panel->panel_lock);
+	rc = dsi_panel_tx_cmd_set(panel, type);
+	mutex_unlock(&panel->panel_lock);
+
 	return rc;
 }

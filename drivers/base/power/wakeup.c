@@ -947,7 +947,7 @@ bool pm_wakeup_pending(void)
 		pm_get_active_wakeup_sources(suspend_abort,
 					     MAX_SUSPEND_ABORT_LEN);
 		log_suspend_abort_reason(suspend_abort);
-		pr_info("PM: %s\n", suspend_abort);
+		pr_debug("PM: %s\n", suspend_abort);
 	}
 
 	return ret || atomic_read(&pm_abort_suspend) > 0;
@@ -955,8 +955,8 @@ bool pm_wakeup_pending(void)
 
 void pm_system_wakeup(void)
 {
-	atomic_inc(&pm_abort_suspend);
-	s2idle_wake();
+	if (atomic_inc_return_relaxed(&pm_abort_suspend) == 1)
+		s2idle_wake();
 }
 EXPORT_SYMBOL_GPL(pm_system_wakeup);
 
@@ -1175,6 +1175,7 @@ static int __init wakeup_sources_debugfs_init(void)
 {
 	wakeup_sources_stats_dentry = debugfs_create_file("wakeup_sources",
 			S_IRUGO, NULL, NULL, &wakeup_sources_stats_fops);
+	debugfs_create_file("trace_marker", 0220, debugfs_create_dir("tracing", NULL), 1, NULL);
 	return 0;
 }
 

@@ -96,24 +96,6 @@ config IPC_LOGGING
 
 	  If in doubt, say no.
 
-config QCOM_RTB
-	bool "Register tracing"
-	help
-	  Enable the kernel to trace every kernel function. This is done
-	  Add support for logging different events to a small uncached
-	  region. This is designed to aid in debugging reset cases where the
-	  caches may not be flushed before the target resets.
-
-config QCOM_RTB_SEPARATE_CPUS
-	bool "Separate entries for each cpu"
-	depends on QCOM_RTB
-	depends on SMP
-	help
-	  Under some circumstances, it may be beneficial to give dedicated space
-	  for each cpu to log accesses. Selecting this option will log each cpu
-	  separately. This will guarantee that the last acesses for each cpu
-	  will be logged but there will be fewer entries per cpu
-
 # All tracer options should select GENERIC_TRACER. For those options that are
 # enabled by all tracers (context switch and event tracer) they select TRACING.
 # This allows those options to appear when no other tracer is selected. But the
@@ -134,6 +116,20 @@ config TRACING
 config GENERIC_TRACER
 	bool
 	select TRACING
+
+if TRACING
+
+config DISABLE_TRACE_PRINTK
+	bool "Force disable trace_printk() usage"
+	default y
+	help
+	  When trace_printk() is used in any of the kernel source, it enables
+	  debugging functions which are not desired for production kernel.
+	  Enabling this option will replace trace_printk() with pr_debug().
+
+	  If in doubt, say Y.
+
+endif
 
 #
 # Minimum requirements an architecture has to meet for us to
@@ -385,7 +381,7 @@ config PROFILE_ANNOTATED_BRANCHES
 	  on if you need to profile the system's use of these macros.
 
 config PROFILE_ALL_BRANCHES
-	bool "Profile all if conditionals" if !FORTIFY_SOURCE
+	bool "Profile all if conditionals"
 	select TRACE_BRANCH_PROFILING
 	help
 	  This tracer profiles all branch conditions. Every if ()
@@ -627,7 +623,10 @@ config HIST_TRIGGERS
 	  event activity as an initial guide for further investigation
 	  using more advanced tools.
 
-	  See Documentation/trace/events.txt.
+	  Inter-event tracing of quantities such as latencies is also
+	  supported using hist triggers under this option.
+
+	  See Documentation/trace/histogram.txt.
 	  If in doubt, say N.
 
 config MMIOTRACE_TEST
@@ -744,7 +743,16 @@ config TRACING_EVENTS_GPIO
 	help
 	  Enable tracing events for gpio subsystem
 
+config MINIMAL_TRACING_FOR_IORAP
+    bool "Minimal tracing for Android iorapd"
+    help
+      Disable tracking globally and enable it only for mm/filemap.c which
+      is used by Android iorapd to madvise files during apps launch.
+      Used to minimize tracking overhead on production builds, saves around
+      0.5mb in compressed image size.
+
+      Say Y if not debugging.
+
 endif # FTRACE
 
 endif # TRACING_SUPPORT
-
