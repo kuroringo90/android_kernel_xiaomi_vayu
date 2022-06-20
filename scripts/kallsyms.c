@@ -28,7 +28,7 @@
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 #endif
 
-#define KSYM_NAME_LEN		128
+#define KSYM_NAME_LEN		256
 
 struct sym_entry {
 	unsigned long long addr;
@@ -114,13 +114,15 @@ static int check_symbol_range(const char *sym, unsigned long long addr,
 static int read_symbol(FILE *in, struct sym_entry *s)
 {
 	char str[500];
+	char buf[LINE_MAX];
 	char *sym, stype;
 	int rc;
 
-	rc = fscanf(in, "%llx %c %499s\n", &s->addr, &stype, str);
-	if (rc != 3) {
-		if (rc != EOF && fgets(str, 500, in) == NULL)
-			fprintf(stderr, "Read error or end of file.\n");
+	if (fgets(buf, sizeof(buf), in) == NULL)
+		return -1;
+
+	rc = sscanf(buf, "%llx %c %499s\n", &s->addr, &stype, str);
+	if (rc < 3) {
 		return -1;
 	}
 	if (strlen(str) > KSYM_NAME_LEN) {
@@ -162,6 +164,8 @@ static int read_symbol(FILE *in, struct sym_entry *s)
 		return -1;
 	/* exclude s390 kasan local symbols */
 	else if (!strncmp(sym, ".LASANPC", 8))
+		return -1;
+	else if (toupper(stype) == 'W' && strstr(sym, ".c") != NULL)
 		return -1;
 
 	/* include the type field in the symbol name, so that it gets
@@ -358,10 +362,10 @@ static void write_src(void)
 	printf("#include <asm/types.h>\n");
 	printf("#if BITS_PER_LONG == 64\n");
 	printf("#define PTR .quad\n");
-	printf("#define ALGN .align 8\n");
+	printf("#define ALGN .balign 8\n");
 	printf("#else\n");
 	printf("#define PTR .long\n");
-	printf("#define ALGN .align 4\n");
+	printf("#define ALGN .balign 4\n");
 	printf("#endif\n");
 
 	printf("\t.section .rodata, \"a\"\n");

@@ -1260,7 +1260,7 @@ perf_event_ctx_lock_nested(struct perf_event *event, int nesting)
 
 again:
 	rcu_read_lock();
-	ctx = ACCESS_ONCE(event->ctx);
+	ctx = READ_ONCE(event->ctx);
 	if (!atomic_inc_not_zero(&ctx->refcount)) {
 		rcu_read_unlock();
 		goto again;
@@ -3829,8 +3829,8 @@ int perf_event_read_local(struct perf_event *event, u64 *value)
 {
 	unsigned long flags;
 	int ret = 0;
-	int local_cpu = smp_processor_id();
-	bool readable = cpumask_test_cpu(local_cpu, &event->readable_on_cpus);
+	int local_cpu;
+	bool readable;
 	/*
 	 * Disabling interrupts avoids all counter scheduling (context
 	 * switches, timer based rotation and IPIs).
@@ -3854,6 +3854,8 @@ int perf_event_read_local(struct perf_event *event, u64 *value)
 	}
 
 	/* If this is a per-CPU event, it must be for this CPU */
+	local_cpu = raw_smp_processor_id();
+	readable = cpumask_test_cpu(local_cpu, &event->readable_on_cpus);
 	if (!(event->attach_state & PERF_ATTACH_TASK) &&
 	    event->cpu != local_cpu &&
 	    !readable) {
@@ -5577,8 +5579,8 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 		if (!rb)
 			goto aux_unlock;
 
-		aux_offset = ACCESS_ONCE(rb->user_page->aux_offset);
-		aux_size = ACCESS_ONCE(rb->user_page->aux_size);
+		aux_offset = READ_ONCE(rb->user_page->aux_offset);
+		aux_size = READ_ONCE(rb->user_page->aux_size);
 
 		if (aux_offset < perf_data_size(rb) + PAGE_SIZE)
 			goto aux_unlock;
@@ -9736,7 +9738,7 @@ static void account_event(struct perf_event *event)
 			 * call the perf scheduling hooks before proceeding to
 			 * install events that need them.
 			 */
-			synchronize_sched();
+			synchronize_rcu();
 		}
 		/*
 		 * Now that we have waited for the sync_sched(), allow further

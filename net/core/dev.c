@@ -1969,7 +1969,7 @@ again:
 	}
 out_unlock:
 	if (pt_prev) {
-		if (!skb_orphan_frags_rx(skb2, GFP_ATOMIC))
+		if (!skb2 || !skb_orphan_frags_rx(skb2, GFP_ATOMIC))
 			pt_prev->func(skb2, skb->dev, pt_prev, skb->dev);
 		else
 			kfree_skb(skb2);
@@ -3047,16 +3047,20 @@ static struct sk_buff *validate_xmit_vlan(struct sk_buff *skb,
 	return skb;
 }
 
-int skb_csum_hwoffload_help(struct sk_buff *skb,
-			    const netdev_features_t features)
+int __skb_csum_hwoffload_help(struct sk_buff *skb,
+			      const netdev_features_t features)
 {
-	if (unlikely(skb->csum_not_inet))
-		return !!(features & NETIF_F_SCTP_CRC) ? 0 :
-			skb_crc32c_csum_help(skb);
+	if (features & (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM)) {
+		switch (skb->csum_offset) {
+		case offsetof(struct tcphdr, check):
+		case offsetof(struct udphdr, check):
+			return 0;
+		}
+	}
 
-	return !!(features & NETIF_F_CSUM_MASK) ? 0 : skb_checksum_help(skb);
+	return skb_checksum_help(skb);
 }
-EXPORT_SYMBOL(skb_csum_hwoffload_help);
+EXPORT_SYMBOL(__skb_csum_hwoffload_help);
 
 static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device *dev)
 {
@@ -3777,7 +3781,7 @@ bool rps_may_expire_flow(struct net_device *dev, u16 rxq_index,
 	flow_table = rcu_dereference(rxqueue->rps_flow_table);
 	if (flow_table && flow_id <= flow_table->mask) {
 		rflow = &flow_table->flows[flow_id];
-		cpu = ACCESS_ONCE(rflow->cpu);
+		cpu = READ_ONCE(rflow->cpu);
 		if (rflow->filter == filter_id && cpu < nr_cpu_ids &&
 		    ((int)(per_cpu(softnet_data, cpu).input_queue_head -
 			   rflow->last_qtail) <

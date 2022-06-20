@@ -363,7 +363,7 @@ char *put_dec(char *buf, unsigned long long n)
  *
  * If speed is not important, use snprintf(). It's easy to read the code.
  */
-int num_to_str(char *buf, int size, unsigned long long num)
+int num_to_str(char *buf, int size, unsigned long long num, unsigned int width)
 {
 	/* put_dec requires 2-byte alignment of the buffer. */
 	char tmp[sizeof(num) * 3] __aligned(2);
@@ -377,11 +377,21 @@ int num_to_str(char *buf, int size, unsigned long long num)
 		len = put_dec(tmp, num) - tmp;
 	}
 
-	if (len > size)
+	if (len > size || width > size)
 		return 0;
+
+	if (width > len) {
+		width = width - len;
+		for (idx = 0; idx < width; idx++)
+			buf[idx] = ' ';
+	} else {
+		width = 0;
+	}
+
 	for (idx = 0; idx < len; ++idx)
-		buf[idx] = tmp[len - idx - 1];
-	return len;
+		buf[idx + width] = tmp[len - idx - 1];
+
+	return len + width;
 }
 
 #define SIGN	1		/* unsigned/signed, must be 1 */
@@ -648,8 +658,8 @@ char *dentry_name(char *buf, char *end, const struct dentry *d, struct printf_sp
 
 	rcu_read_lock();
 	for (i = 0; i < depth; i++, d = p) {
-		p = ACCESS_ONCE(d->d_parent);
-		array[i] = ACCESS_ONCE(d->d_name.name);
+		p = READ_ONCE(d->d_parent);
+		array[i] = READ_ONCE(d->d_name.name);
 		if (p == d) {
 			if (i)
 				array[i] = "";

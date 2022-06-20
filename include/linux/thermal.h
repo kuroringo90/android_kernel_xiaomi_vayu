@@ -33,7 +33,7 @@
 #include <uapi/linux/thermal.h>
 
 #define THERMAL_TRIPS_NONE	-1
-#define THERMAL_MAX_TRIPS	12
+#define THERMAL_MAX_TRIPS	16
 
 /* invalid cooling state */
 #define THERMAL_CSTATE_INVALID -1UL
@@ -425,6 +425,7 @@ enum aggregation_logic {
 	VIRT_MAXIMUM,
 	VIRT_MINIMUM,
 	VIRT_AGGREGATION_NR,
+	VIRT_COUNT_THRESHOLD,
 };
 
 /*

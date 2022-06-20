@@ -930,7 +930,7 @@ struct ipa3_ep_context {
 	unsigned long gsi_chan_hdl;
 	unsigned long gsi_evt_ring_hdl;
 	struct ipa_gsi_ep_mem_info gsi_mem_info;
-	union __packed gsi_channel_scratch chan_scratch;
+	union gsi_channel_scratch chan_scratch;
 	struct gsi_chan_xfer_notify xfer_notify;
 	bool xfer_notify_valid;
 	struct ipa_ep_cfg cfg;
@@ -985,9 +985,9 @@ struct ipa_request_gsi_channel_params {
 	bool skip_ep_cfg;
 	bool keep_ipa_awake;
 	struct gsi_evt_ring_props evt_ring_params;
-	union __packed gsi_evt_scratch evt_scratch;
+	union gsi_evt_scratch evt_scratch;
 	struct gsi_chan_props chan_params;
-	union __packed gsi_channel_scratch chan_scratch;
+	union gsi_channel_scratch chan_scratch;
 };
 
 enum ipa3_sys_pipe_policy {
@@ -1424,10 +1424,12 @@ struct ipa3_active_clients {
 	int bus_vote_idx;
 };
 
+#ifdef IPA_WAKELOCKS
 struct ipa3_wakelock_ref_cnt {
 	spinlock_t spinlock;
 	int cnt;
 };
+#endif
 
 struct ipa3_tag_completion {
 	struct completion comp;
@@ -1974,8 +1976,10 @@ struct ipa3_context {
 	bool gsi_ch20_wa;
 	bool s1_bypass_arr[IPA_SMMU_CB_MAX];
 	u32 wdi_map_cnt;
+#ifdef IPA_WAKELOCKS
 	struct wakeup_source w_lock;
 	struct ipa3_wakelock_ref_cnt wakelock_ref_cnt;
+#endif
 	/* RMNET_IOCTL_INGRESS_FORMAT_AGG_DATA */
 	bool ipa_client_apps_wan_cons_agg_gro;
 	/* M-release support to know client pipes */
@@ -2770,7 +2774,7 @@ bool ipa3_has_open_aggr_frame(enum ipa_client_type client);
 
 int ipa3_mhi_resume_channels_internal(enum ipa_client_type client,
 		bool LPTransitionRejected, bool brstmode_enabled,
-		union __packed gsi_channel_scratch ch_scratch, u8 index,
+		union gsi_channel_scratch ch_scratch, u8 index,
 		bool is_switch_to_dbmode);
 
 int ipa3_mhi_destroy_channel(enum ipa_client_type client);
@@ -3035,6 +3039,7 @@ int ipa_hw_stats_init(void);
 int ipa_init_flt_rt_stats(void);
 
 int ipa_debugfs_init_stats(struct dentry *parent);
+void ipa_debugfs_remove_stats(void);
 
 int ipa_init_quota_stats(u32 pipe_bitmask);
 

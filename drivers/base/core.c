@@ -300,7 +300,7 @@ struct device_link *device_link_add(struct device *consumer,
 	list_add_tail_rcu(&link->s_node, &supplier->links.consumers);
 	list_add_tail_rcu(&link->c_node, &consumer->links.suppliers);
 
-	dev_info(consumer, "Linked as a consumer to %s\n", dev_name(supplier));
+	dev_dbg(consumer, "Linked as a consumer to %s\n", dev_name(supplier));
 
  out:
 	device_pm_unlock();
@@ -328,7 +328,7 @@ static void __device_link_free_srcu(struct rcu_head *rhead)
 
 static void __device_link_del(struct device_link *link)
 {
-	dev_info(link->consumer, "Dropping the link to %s\n",
+	dev_dbg(link->consumer, "Dropping the link to %s\n",
 		 dev_name(link->supplier));
 
 	if (link->flags & DL_FLAG_PM_RUNTIME)
@@ -341,7 +341,7 @@ static void __device_link_del(struct device_link *link)
 #else /* !CONFIG_SRCU */
 static void __device_link_del(struct device_link *link)
 {
-	dev_info(link->consumer, "Dropping the link to %s\n",
+	dev_dbg(link->consumer, "Dropping the link to %s\n",
 		 dev_name(link->supplier));
 
 	if (link->flags & DL_FLAG_PM_RUNTIME)
@@ -707,7 +707,7 @@ const char *dev_driver_string(const struct device *dev)
 	 * so be careful about accessing it.  dev->bus and dev->class should
 	 * never change once they are set, so they don't need special care.
 	 */
-	drv = ACCESS_ONCE(dev->driver);
+	drv = READ_ONCE(dev->driver);
 	return drv ? drv->name :
 			(dev->bus ? dev->bus->name :
 			(dev->class ? dev->class->name : ""));
@@ -1456,6 +1456,8 @@ void device_initialize(struct device *dev)
 	INIT_LIST_HEAD(&dev->links.consumers);
 	INIT_LIST_HEAD(&dev->links.suppliers);
 	dev->links.status = DL_DEV_NO_DRIVER;
+	INIT_LIST_HEAD(&dev->iommu_map_list);
+	mutex_init(&dev->iommu_map_lock);
 }
 EXPORT_SYMBOL_GPL(device_initialize);
 

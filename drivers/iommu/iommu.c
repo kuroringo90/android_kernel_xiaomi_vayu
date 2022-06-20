@@ -630,8 +630,6 @@ rename:
 
 	trace_add_device_to_group(group->id, dev);
 
-	pr_info("Adding device %s to group %d\n", dev_name(dev), group->id);
-
 	return 0;
 
 err_put_group:
@@ -1812,6 +1810,8 @@ int report_iommu_fault(struct iommu_domain *domain, struct device *dev,
 	if (domain->handler)
 		ret = domain->handler(domain, dev, iova, flags,
 						domain->handler_token);
+		if (ret)
+			panic("iommu fault detected");
 
 	trace_io_page_fault(dev, iova, flags);
 	return ret;
