@@ -1271,19 +1271,11 @@ int subsystem_restart_dev(struct subsys_device *dev)
 		return 0;
 	}
 
-	switch (dev->restart_level) {
+	if (!strcmp(name, "modem"))
+		dev->restart_level = RESET_SUBSYS_COUPLED;
 
-	case RESET_SUBSYS_COUPLED:
-		__subsystem_restart_dev(dev);
-		break;
-	case RESET_SOC:
-		__pm_stay_awake(&dev->ssr_wlock);
-		schedule_work(&dev->device_restart_work);
-		return 0;
-	default:
-		panic("subsys-restart: Unknown restart level!\n");
-		break;
-	}
+	__subsystem_restart_dev(dev);
+
 	module_put(dev->owner);
 	put_device(&dev->dev);
 

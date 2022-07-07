@@ -39,6 +39,7 @@
 #include <linux/splice.h>
 #include <linux/in6.h>
 #include <linux/if_packet.h>
+#include <linux/llist.h>
 #include <net/flow.h>
 
 /* The interface for checksum offload between the stack and networking drivers
@@ -675,6 +676,7 @@ struct sk_buff {
 		};
 		struct rb_node		rbnode; /* used in netem, ip4 defrag, and tcp stack */
 		struct list_head	list;
+	        struct llist_node	ll_node;
 	};
 
 	union {
@@ -986,11 +988,42 @@ static inline struct sk_buff *alloc_skb(unsigned int size,
 	return __alloc_skb(size, priority, 0, NUMA_NO_NODE);
 }
 
-struct sk_buff *alloc_skb_with_frags(unsigned long header_len,
-				     unsigned long data_len,
-				     int max_page_order,
-				     int *errcode,
-				     gfp_t gfp_mask);
+struct sk_buff *alloc_skb_frags(struct sk_buff *skb,
+				unsigned long data_len,
+				int max_page_order,
+				int *errcode,
+				gfp_t gfp_mask);
+
+/**
+ * alloc_skb_with_frags - allocate skb with page frags
+ *
+ * @header_len: size of linear part
+ * @data_len: needed length in frags
+ * @max_page_order: max page order desired.
+ * @errcode: pointer to error code if any
+ * @gfp_mask: allocation mask
+ *
+ * This can be used to allocate a paged skb, given a maximal order for frags.
+ */
+static inline struct sk_buff *alloc_skb_with_frags(unsigned long header_len,
+						   unsigned long data_len,
+						   int max_page_order,
+						   int *errcode,
+						   gfp_t gfp_mask)
+{
+	struct sk_buff *skb;
+
+	skb = alloc_skb(header_len, gfp_mask);
+	if (unlikely(!skb)) {
+		*errcode = -ENOBUFS;
+		return NULL;
+	}
+
+	if (!data_len)
+		return skb;
+	return alloc_skb_frags(skb, data_len, max_page_order, errcode, gfp_mask);
+}
+
 
 /* Layout of fast clones : [skb1][skb2][fclone_ref] */
 struct sk_buff_fclones {
@@ -1281,7 +1314,7 @@ static inline struct skb_shared_hwtstamps *skb_hwtstamps(struct sk_buff *skb)
 
 static inline struct ubuf_info *skb_zcopy(struct sk_buff *skb)
 {
-	bool is_zcopy = skb && skb_shinfo(skb)->tx_flags & SKBTX_DEV_ZEROCOPY;
+	bool is_zcopy = skb_shinfo(skb)->tx_flags & SKBTX_DEV_ZEROCOPY;
 
 	return is_zcopy ? skb_uarg(skb) : NULL;
 }
@@ -4191,6 +4224,12 @@ static inline __wsum lco_csum(struct sk_buff *skb)
 	 * adjustment filled in by caller) and return result.
 	 */
 	return csum_partial(l4_hdr, csum_start - l4_hdr, partial);
+}
+
+
+static inline bool skb_csum_is_sctp(struct sk_buff *skb)
+{
+	return skb->csum_not_inet;
 }
 
 #endif	/* __KERNEL__ */

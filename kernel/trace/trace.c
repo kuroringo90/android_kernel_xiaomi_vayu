@@ -1178,6 +1178,14 @@ static struct {
 	ARCH_TRACE_CLOCKS
 };
 
+bool trace_clock_in_ns(struct trace_array *tr)
+{
+	if (trace_clocks[tr->clock_id].in_ns)
+		return true;
+
+	return false;
+}
+
 /*
  * trace_parser_get_init - gets the buffer for trace parser
  */
@@ -1685,7 +1693,7 @@ void tracing_reset(struct trace_buffer *buf, int cpu)
 	ring_buffer_record_disable(buffer);
 
 	/* Make sure all commits have finished */
-	synchronize_sched();
+	synchronize_rcu();
 	ring_buffer_reset_cpu(buffer, cpu);
 
 	ring_buffer_record_enable(buffer);
@@ -1702,7 +1710,7 @@ void tracing_reset_online_cpus(struct trace_buffer *buf)
 	ring_buffer_record_disable(buffer);
 
 	/* Make sure all commits have finished */
-	synchronize_sched();
+	synchronize_rcu();
 
 	buf->time_start = buffer_ftrace_now(buf, buf->cpu);
 
@@ -2261,7 +2269,7 @@ void trace_buffered_event_disable(void)
 	preempt_enable();
 
 	/* Wait for all current users to finish */
-	synchronize_sched();
+	synchronize_rcu();
 
 	for_each_tracing_cpu(cpu) {
 		free_page((unsigned long)per_cpu(trace_buffered_event, cpu));
@@ -2293,7 +2301,7 @@ trace_event_buffer_lock_reserve(struct ring_buffer **current_rb,
 
 	*current_rb = trace_file->tr->trace_buffer.buffer;
 
-	if ((trace_file->flags &
+	if (!ring_buffer_time_stamp_abs(*current_rb) && (trace_file->flags &
 	     (EVENT_FILE_FL_SOFT_DISABLED | EVENT_FILE_FL_FILTERED)) &&
 	    (entry = this_cpu_read(trace_buffered_event))) {
 		/* Try to use the per cpu buffer first */
@@ -2706,17 +2714,6 @@ void __trace_stack(struct trace_array *tr, unsigned long flags, int skip,
 	 * not be called from NMI.
 	 */
 	if (unlikely(in_nmi()))
-		return;
-
-	/*
-	 * It is possible that a function is being traced in a
-	 * location that RCU is not watching. A call to
-	 * rcu_irq_enter() will make sure that it is, but there's
-	 * a few internal rcu functions that could be traced
-	 * where that wont work either. In those cases, we just
-	 * do nothing.
-	 */
-	if (unlikely(rcu_irq_enter_disabled()))
 		return;
 
 	rcu_irq_enter_irqson();
@@ -4588,6 +4585,9 @@ static const char readme_msg[] =
 #ifdef CONFIG_X86_64
 	"     x86-tsc:   TSC cycle counter\n"
 #endif
+	"\n  timestamp_mode\t-view the mode used to timestamp events\n"
+	"       delta:   Delta difference against a buffer-wide timestamp\n"
+	"    absolute:   Absolute (standalone) timestamp\n"
 	"\n  trace_marker\t\t- Writes into this file writes into the kernel buffer\n"
 	"\n  trace_marker_raw\t\t- Writes into this file writes binary data into the kernel buffer\n"
 	"  tracing_cpumask\t- Limit which CPUs to trace\n"
@@ -4764,8 +4764,9 @@ static const char readme_msg[] =
 	"\t            .sym        display an address as a symbol\n"
 	"\t            .sym-offset display an address as a symbol and offset\n"
 	"\t            .execname   display a common_pid as a program name\n"
-	"\t            .syscall    display a syscall id as a syscall name\n\n"
-	"\t            .log2       display log2 value rather than raw number\n\n"
+	"\t            .syscall    display a syscall id as a syscall name\n"
+	"\t            .log2       display log2 value rather than raw number\n"
+	"\t            .usecs      display a common_timestamp in microseconds\n\n"
 	"\t    The 'pause' parameter can be used to pause an existing hist\n"
 	"\t    trigger or to start a hist trigger but not log any events\n"
 	"\t    until told to do so.  'continue' can be used to start or\n"
@@ -5431,7 +5432,7 @@ static int tracing_set_tracer(struct trace_array *tr, const char *buf)
 	if (tr->current_trace->reset)
 		tr->current_trace->reset(tr);
 
-	/* Current trace needs to be nop_trace before synchronize_sched */
+	/* Current trace needs to be nop_trace before synchronize_rcu */
 	tr->current_trace = &nop_trace;
 
 #ifdef CONFIG_TRACER_MAX_TRACE
@@ -5445,7 +5446,7 @@ static int tracing_set_tracer(struct trace_array *tr, const char *buf)
 		 * The update_max_tr is called from interrupts disabled
 		 * so a synchronized_sched() is sufficient.
 		 */
-		synchronize_sched();
+		synchronize_rcu();
 		free_snapshot(tr);
 	}
 #endif
@@ -6264,7 +6265,7 @@ static int tracing_clock_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int tracing_set_clock(struct trace_array *tr, const char *clockstr)
+int tracing_set_clock(struct trace_array *tr, const char *clockstr)
 {
 	int i;
 
@@ -6340,6 +6341,71 @@ static int tracing_clock_open(struct inode *inode, struct file *file)
 	ret = single_open(file, tracing_clock_show, inode->i_private);
 	if (ret < 0)
 		trace_array_put(tr);
+
+	return ret;
+}
+
+static int tracing_time_stamp_mode_show(struct seq_file *m, void *v)
+{
+	struct trace_array *tr = m->private;
+
+	mutex_lock(&trace_types_lock);
+
+	if (ring_buffer_time_stamp_abs(tr->trace_buffer.buffer))
+		seq_puts(m, "delta [absolute]\n");
+	else
+		seq_puts(m, "[delta] absolute\n");
+
+	mutex_unlock(&trace_types_lock);
+
+	return 0;
+}
+
+static int tracing_time_stamp_mode_open(struct inode *inode, struct file *file)
+{
+	struct trace_array *tr = inode->i_private;
+	int ret;
+
+	if (tracing_disabled)
+		return -ENODEV;
+
+	if (trace_array_get(tr))
+		return -ENODEV;
+
+	ret = single_open(file, tracing_time_stamp_mode_show, inode->i_private);
+	if (ret < 0)
+		trace_array_put(tr);
+
+	return ret;
+}
+
+int tracing_set_time_stamp_abs(struct trace_array *tr, bool abs)
+{
+	int ret = 0;
+
+	mutex_lock(&trace_types_lock);
+
+	if (abs && tr->time_stamp_abs_ref++)
+		goto out;
+
+	if (!abs) {
+		if (WARN_ON_ONCE(!tr->time_stamp_abs_ref)) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		if (--tr->time_stamp_abs_ref)
+			goto out;
+	}
+
+	ring_buffer_set_time_stamp_abs(tr->trace_buffer.buffer, abs);
+
+#ifdef CONFIG_TRACER_MAX_TRACE
+	if (tr->max_buffer.buffer)
+		ring_buffer_set_time_stamp_abs(tr->max_buffer.buffer, abs);
+#endif
+ out:
+	mutex_unlock(&trace_types_lock);
 
 	return ret;
 }
@@ -6591,6 +6657,13 @@ static const struct file_operations trace_clock_fops = {
 	.llseek		= seq_lseek,
 	.release	= tracing_single_release_tr,
 	.write		= tracing_clock_write,
+};
+
+static const struct file_operations trace_time_stamp_mode_fops = {
+	.open		= tracing_time_stamp_mode_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= tracing_single_release_tr,
 };
 
 #ifdef CONFIG_TRACER_SNAPSHOT
@@ -7784,6 +7857,7 @@ static int instance_mkdir(const char *name)
 
 	INIT_LIST_HEAD(&tr->systems);
 	INIT_LIST_HEAD(&tr->events);
+	INIT_LIST_HEAD(&tr->hist_vars);
 
 	if (allocate_trace_buffers(tr, trace_buf_size) < 0)
 		goto out_free_tr;
@@ -7935,6 +8009,9 @@ init_tracer_tracefs(struct trace_array *tr, struct dentry *d_tracer)
 
 	trace_create_file("tracing_on", 0644, d_tracer,
 			  tr, &rb_simple_fops);
+
+	trace_create_file("timestamp_mode", 0444, d_tracer, tr,
+			  &trace_time_stamp_mode_fops);
 
 	create_trace_options_dir(tr);
 
@@ -8343,6 +8420,92 @@ void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
 }
 EXPORT_SYMBOL_GPL(ftrace_dump);
 
+int trace_run_command(const char *buf, int (*createfn)(int, char **))
+{
+	char **argv;
+	int argc, ret;
+
+	argc = 0;
+	ret = 0;
+	argv = argv_split(GFP_KERNEL, buf, &argc);
+	if (!argv)
+		return -ENOMEM;
+
+	if (argc)
+		ret = createfn(argc, argv);
+
+	argv_free(argv);
+
+	return ret;
+}
+
+#define WRITE_BUFSIZE  4096
+
+ssize_t trace_parse_run_command(struct file *file, const char __user *buffer,
+				size_t count, loff_t *ppos,
+				int (*createfn)(int, char **))
+{
+	char *kbuf, *buf, *tmp;
+	int ret = 0;
+	size_t done = 0;
+	size_t size;
+
+	kbuf = kmalloc(WRITE_BUFSIZE, GFP_KERNEL);
+	if (!kbuf)
+		return -ENOMEM;
+
+	while (done < count) {
+		size = count - done;
+
+		if (size >= WRITE_BUFSIZE)
+			size = WRITE_BUFSIZE - 1;
+
+		if (copy_from_user(kbuf, buffer + done, size)) {
+			ret = -EFAULT;
+			goto out;
+		}
+		kbuf[size] = '\0';
+		buf = kbuf;
+		do {
+			tmp = strchr(buf, '\n');
+			if (tmp) {
+				*tmp = '\0';
+				size = tmp - buf + 1;
+			} else {
+				size = strlen(buf);
+				if (done + size < count) {
+					if (buf != kbuf)
+						break;
+					/* This can accept WRITE_BUFSIZE - 2 ('\n' + '\0') */
+					pr_warn("Line length is too long: Should be less than %d\n",
+						WRITE_BUFSIZE - 2);
+					ret = -EINVAL;
+					goto out;
+				}
+			}
+			done += size;
+
+			/* Remove comments */
+			tmp = strchr(buf, '#');
+
+			if (tmp)
+				*tmp = '\0';
+
+			ret = trace_run_command(buf, createfn);
+			if (ret)
+				goto out;
+			buf += size;
+
+		} while (done < count);
+	}
+	ret = done;
+
+out:
+	kfree(kbuf);
+
+	return ret;
+}
+
 __init static int tracer_alloc_buffers(void)
 {
 	int ring_buf_size;
@@ -8443,6 +8606,7 @@ __init static int tracer_alloc_buffers(void)
 
 	INIT_LIST_HEAD(&global_trace.systems);
 	INIT_LIST_HEAD(&global_trace.events);
+	INIT_LIST_HEAD(&global_trace.hist_vars);
 	list_add(&global_trace.list, &ftrace_trace_arrays);
 
 	apply_trace_boot_options();

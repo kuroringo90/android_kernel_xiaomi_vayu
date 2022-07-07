@@ -952,10 +952,10 @@ static int setup_kmem_cache_node(struct kmem_cache *cachep,
 	 * To protect lockless access to n->shared during irq disabled context.
 	 * If n->shared isn't NULL in irq disabled context, accessing to it is
 	 * guaranteed to be valid until irq is re-enabled, because it will be
-	 * freed after synchronize_sched().
+	 * freed after synchronize_rcu().
 	 */
 	if (old_shared && force_change)
-		synchronize_sched();
+		synchronize_rcu();
 
 fail:
 	kfree(old_shared);
@@ -1240,7 +1240,7 @@ void __init kmem_cache_init(void)
 	 * page orders on machines with more than 32MB of memory if
 	 * not overridden on the command line.
 	 */
-	if (!slab_max_order_set && totalram_pages > (32 << 20) >> PAGE_SHIFT)
+	if (!slab_max_order_set && totalram_pages() > (32 << 20) >> PAGE_SHIFT)
 		slab_max_order = SLAB_MAX_ORDER_HI;
 
 	/* Bootstrap is tricky, because several objects are allocated
@@ -2661,13 +2661,10 @@ static struct page *cache_grow_begin(struct kmem_cache *cachep,
 	 * Be lazy and only check for valid flags here,  keeping it out of the
 	 * critical path in kmem_cache_alloc().
 	 */
-	if (unlikely(flags & GFP_SLAB_BUG_MASK)) {
-		gfp_t invalid_mask = flags & GFP_SLAB_BUG_MASK;
-		flags &= ~GFP_SLAB_BUG_MASK;
-		pr_warn("Unexpected gfp: %#x (%pGg). Fixing up to gfp: %#x (%pGg). Fix your code!\n",
-				invalid_mask, &invalid_mask, flags, &flags);
-		dump_stack();
-	}
+	if (unlikely(flags & GFP_SLAB_BUG_MASK))
+		flags = kmalloc_fix_flags(flags);
+
+	WARN_ON_ONCE(cachep->ctor && (flags & __GFP_ZERO));
 	local_flags = flags & (GFP_CONSTRAINT_MASK|GFP_RECLAIM_MASK);
 
 	check_irq_off();
@@ -3080,6 +3077,7 @@ static inline void cache_alloc_debugcheck_before(struct kmem_cache *cachep,
 static void *cache_alloc_debugcheck_after(struct kmem_cache *cachep,
 				gfp_t flags, void *objp, unsigned long caller)
 {
+	WARN_ON_ONCE(cachep->ctor && (flags & __GFP_ZERO));
 	if (!objp)
 		return objp;
 	if (cachep->flags & SLAB_POISON) {

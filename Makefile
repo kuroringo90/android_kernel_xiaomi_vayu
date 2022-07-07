@@ -363,9 +363,9 @@ HOST_LFS_LIBS := $(shell getconf LFS_LIBS 2>/dev/null)
 
 HOSTCC       = gcc
 HOSTCXX      = g++
-HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 \
-		-fomit-frame-pointer -std=gnu89 $(HOST_LFS_CFLAGS)
-HOSTCXXFLAGS := -O2 $(HOST_LFS_CFLAGS)
+HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O3 \
+		-fomit-frame-pointer -std=gnu89 -pipe $(HOST_LFS_CFLAGS)
+HOSTCXXFLAGS := -O3 $(HOST_LFS_CFLAGS)
 HOSTLDFLAGS  := $(HOST_LFS_LDFLAGS)
 HOST_LOADLIBES := $(HOST_LFS_LIBS)
 
@@ -377,11 +377,11 @@ endif
 # Make variables (CC, etc...)
 AS		= $(CROSS_COMPILE)as
 LD		= $(CROSS_COMPILE)ld
-REAL_CC		= $(CROSS_COMPILE)gcc
+CC		= $(CROSS_COMPILE)gcc
 LDGOLD		= $(CROSS_COMPILE)ld.gold
 CPP		= $(CC) -E
-AR		= $(CROSS_COMPILE)ar
-NM		= $(CROSS_COMPILE)nm
+AR             ?= $(CROSS_COMPILE)ar
+NM             ?= $(CROSS_COMPILE)nm
 STRIP		= $(CROSS_COMPILE)strip
 OBJCOPY		= $(CROSS_COMPILE)objcopy
 OBJDUMP		= $(CROSS_COMPILE)objdump
@@ -392,10 +392,6 @@ DEPMOD		= depmod
 PERL		= perl
 PYTHON		= python
 CHECK		= sparse
-
-# Use the wrapper for the compiler.  This wrapper scans for new
-# warnings and causes the build to stop upon encountering them
-CC		= $(PYTHON) $(srctree)/scripts/gcc-wrapper.py $(REAL_CC)
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void $(CF)
@@ -425,7 +421,7 @@ LINUXINCLUDE    := \
 		$(USERINCLUDE)
 
 KBUILD_AFLAGS   := -D__ASSEMBLY__
-KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
+KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs -pipe \
 		   -fno-strict-aliasing -fno-common -fshort-wchar \
 		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
@@ -444,6 +440,7 @@ KBUILD_CFLAGS_KERNEL :=
 KBUILD_AFLAGS_MODULE  := -DMODULE
 KBUILD_CFLAGS_MODULE  := -DMODULE
 KBUILD_LDFLAGS_MODULE := -T $(srctree)/scripts/module-common.lds
+LDFLAGS :=
 GCC_PLUGINS_CFLAGS :=
 CLANG_FLAGS :=
 
@@ -688,6 +685,27 @@ LLVM_NM		:= llvm-nm
 export LLVM_AR LLVM_NM
 endif
 
+ifdef CONFIG_LTO_GCC
+LTO_CFLAGS	:= -flto -flto=jobserver -fipa-pta -fno-fat-lto-objects \
+		   -fuse-linker-plugin -fwhole-program -flto-compression-level=3
+KBUILD_CFLAGS	+= $(LTO_CFLAGS) --param=max-inline-insns-auto=1000
+LTO_LDFLAGS	:= $(LTO_CFLAGS) -Wno-lto-type-mismatch -Wno-psabi \
+		   -Wno-stringop-overflow -Wno-stringop-overread -flinker-output=nolto-rel \
+		   -Wno-aggressive-loop-optimizations
+LDFINAL		:= $(CONFIG_SHELL) $(srctree)/scripts/gcc-ld $(LTO_LDFLAGS)
+AR		:= $(CROSS_COMPILE)gcc-ar
+NM		:= $(CROSS_COMPILE)gcc-nm
+DISABLE_LTO	:= -fno-lto
+export DISABLE_LTO LDFINAL
+else
+LDFINAL		:= $(LD)
+export LDFINAL
+endif
+
+ifdef CONFIG_GCC_GRAPHITE
+KBUILD_CFLAGS	+= -fgraphite-identity -floop-nest-optimize
+endif
+
 # The arch Makefile can set ARCH_{CPP,A,C}FLAGS to override the default
 # values of the respective KBUILD_* variables
 ARCH_CPPFLAGS :=
@@ -706,7 +724,27 @@ KBUILD_CFLAGS	+= $(call cc-disable-warning, attribute-alias)
 ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS   += -Os
 else
-KBUILD_CFLAGS   += -O2
+KBUILD_CFLAGS   += -O3
+ifeq ($(cc-name),gcc)
+KBUILD_CFLAGS	+= -mcpu=cortex-a76.cortex-a55+crypto+crc+lse+fp16+rcpc+rdma+dotprod -mtune=cortex-a76.cortex-a55
+endif
+ifeq ($(cc-name),clang)
+KBUILD_CFLAGS	+= -mcpu=cortex-a55 -mtune=cortex-a55
+
+ifdef CONFIG_LLVM_POLLY
+KBUILD_CFLAGS	+= -mllvm -polly \
+		   -mllvm -polly-run-inliner \
+		   -mllvm -polly-isl-arg=--no-schedule-serialize-sccs \
+		   -mllvm -polly-ast-use-context \
+		   -mllvm -polly-detect-keep-going \
+		   -mllvm -polly-vectorizer=stripmine \
+		   -mllvm -polly-invariant-load-hoisting
+endif
+endif
+endif
+
+ifdef CONFIG_MINIMAL_TRACING_FOR_IORAP
+KBUILD_CFLAGS   += -DNOTRACE
 endif
 
 # Tell gcc to never replace conditional load with a non-conditional one
@@ -762,11 +800,12 @@ ifeq ($(cc-name),clang)
 KBUILD_CFLAGS += $(call cc-disable-warning, format-invalid-specifier)
 KBUILD_CFLAGS += $(call cc-disable-warning, gnu)
 KBUILD_CFLAGS += $(call cc-disable-warning, duplicate-decl-specifier)
-KBUILD_CFLAGS += -fno-builtin
 KBUILD_CFLAGS += $(call cc-option, -Wno-undefined-optimized)
 KBUILD_CFLAGS += $(call cc-option, -Wno-tautological-constant-out-of-range-compare)
 KBUILD_CFLAGS += $(call cc-option, -mllvm -disable-struct-const-merge)
 KBUILD_CFLAGS += $(call cc-option, -Wno-sometimes-uninitialized)
+KBUILD_CFLAGS += $(call cc-option, -Wno-pointer-to-int-cast)
+KBUILD_CFLAGS += $(call cc-option, -Wno-void-pointer-to-int-cast)
 
 # Quiet clang warning: comparison of unsigned expression < 0 is always false
 
@@ -784,7 +823,11 @@ KBUILD_CFLAGS += $(call cc-option,-fno-delete-null-pointer-checks,)
 KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
 
 ifeq ($(ld-name),lld)
-LDFLAGS += -O2
+ifdef CONFIG_LTO_CLANG
+LDFLAGS += --lto-O3
+else
+LDFLAGS += -O3
+endif
 endif
 
 KBUILD_CFLAGS += $(call cc-disable-warning, unused-const-variable)
@@ -877,12 +920,6 @@ lto-clang-flags	:= -flto
 endif
 lto-clang-flags += -fvisibility=default $(call cc-option, -fsplit-lto-unit)
 
-# Limit inlining across translation units to reduce binary size
-LD_FLAGS_LTO_CLANG := -mllvm -import-instr-limit=5
-
-KBUILD_LDFLAGS += $(LD_FLAGS_LTO_CLANG)
-KBUILD_LDFLAGS_MODULE += $(LD_FLAGS_LTO_CLANG)
-
 KBUILD_LDFLAGS_MODULE += -T scripts/module-lto.lds
 
 # allow disabling only clang LTO where needed
@@ -903,7 +940,8 @@ export LDFINAL_vmlinux LDFLAGS_FINAL_vmlinux
 endif
 
 ifdef CONFIG_CFI_CLANG
-cfi-clang-flags	+= -fsanitize=cfi -fno-sanitize-cfi-canonical-jump-tables
+cfi-clang-flags	+= -fsanitize=cfi -fno-sanitize-cfi-canonical-jump-tables \
+		   -fno-sanitize-blacklist
 DISABLE_CFI_CLANG := -fno-sanitize=cfi
 ifdef CONFIG_MODULES
 cfi-clang-flags	+= -fsanitize-cfi-cross-dso
@@ -959,6 +997,12 @@ KBUILD_CFLAGS += $(call cc-disable-warning, restrict)
 # Enabled with W=2, disabled by default as noisy
 KBUILD_CFLAGS += $(call cc-disable-warning, maybe-uninitialized)
 
+# disable warning -Wunused-function
+KBUILD_CFLAGS += $(call cc-disable-warning, unused-function)
+
+# disable warning -Wunused-variable
+KBUILD_CFLAGS += $(call cc-disable-warning, unused-variable)
+
 # disable invalid "can't wrap" optimizations for signed / pointers
 KBUILD_CFLAGS	+= $(call cc-option,-fno-strict-overflow)
 
@@ -973,9 +1017,6 @@ KBUILD_CFLAGS	+= $(call cc-option,-fmerge-constants)
 
 # Make sure -fstack-check isn't enabled (like gentoo apparently did)
 KBUILD_CFLAGS  += $(call cc-option,-fno-stack-check,)
-
-# conserve stack if available
-KBUILD_CFLAGS   += $(call cc-option,-fconserve-stack)
 
 # disallow errors like 'EXPORT_GPL(foo);' with missing header
 KBUILD_CFLAGS   += $(call cc-option,-Werror=implicit-int)
@@ -1094,6 +1135,7 @@ INITRD_COMPRESS-$(CONFIG_RD_LZMA)  := lzma
 INITRD_COMPRESS-$(CONFIG_RD_XZ)    := xz
 INITRD_COMPRESS-$(CONFIG_RD_LZO)   := lzo
 INITRD_COMPRESS-$(CONFIG_RD_LZ4)   := lz4
+INITRD_COMPRESS-$(CONFIG_RD_ZSTD)  := zstd
 # do not export INITRD_COMPRESS, since we didn't actually
 # choose a sane default compression above.
 # export INITRD_COMPRESS := $(INITRD_COMPRESS-y)
@@ -1399,7 +1441,7 @@ headers_install: __headers
 	  $(error Headers not exportable for the $(SRCARCH) architecture))
 	$(Q)$(MAKE) $(hdr-inst)=include/uapi dst=include
 	$(Q)$(MAKE) $(hdr-inst)=arch/$(hdr-arch)/include/uapi $(hdr-dst)
-	$(Q)$(MAKE) $(hdr-inst)=techpack
+	$(Q)$(MAKE) $(hdr-inst)=techpack/audio/include/uapi dst=techpack/audio/include
 
 PHONY += headers_check_all
 headers_check_all: headers_install_all
@@ -1409,7 +1451,7 @@ PHONY += headers_check
 headers_check: headers_install
 	$(Q)$(MAKE) $(hdr-inst)=include/uapi dst=include HDRCHECK=1
 	$(Q)$(MAKE) $(hdr-inst)=arch/$(hdr-arch)/include/uapi $(hdr-dst) HDRCHECK=1
-	$(Q)$(MAKE) $(hdr-inst)=techpack HDRCHECK=1
+	$(Q)$(MAKE) $(hdr-inst)=techpack/audio/include/uapi dst=techpack/audio/include HDRCHECK=1
 
 # ---------------------------------------------------------------------------
 # Kernel selftest

@@ -229,31 +229,11 @@ static unsigned int dev_num = 1;
 static struct cdev wlan_hdd_state_cdev;
 static struct class *class;
 static dev_t device;
-#ifndef MODULE
-static struct gwlan_loader *wlan_loader;
-static ssize_t wlan_boot_cb(struct kobject *kobj,
-			    struct kobj_attribute *attr,
-			    const char *buf, size_t count);
-struct gwlan_loader {
-	bool loaded_state;
-	struct kobject *boot_wlan_obj;
-	struct attribute_group *attr_group;
-};
-
-static struct kobj_attribute wlan_boot_attribute =
-	__ATTR(boot_wlan, 0220, NULL, wlan_boot_cb);
-
-static struct attribute *attrs[] = {
-	&wlan_boot_attribute.attr,
-	NULL,
-};
-#define MODULE_INITIALIZED 1
 
 #ifdef MULTI_IF_NAME
 #define WLAN_LOADER_NAME "boot_" MULTI_IF_NAME
 #else
 #define WLAN_LOADER_NAME "boot_wlan"
-#endif
 #endif
 
 /* the Android framework expects this param even though we don't use it */
@@ -8756,32 +8736,6 @@ out:
 }
 
 /**
- * hdd_rx_wake_lock_destroy() - Destroy RX wakelock
- * @hdd_ctx:	HDD context.
- *
- * Destroy RX wakelock.
- *
- * Return: None.
- */
-static void hdd_rx_wake_lock_destroy(struct hdd_context *hdd_ctx)
-{
-	qdf_wake_lock_destroy(&hdd_ctx->rx_wake_lock);
-}
-
-/**
- * hdd_rx_wake_lock_create() - Create RX wakelock
- * @hdd_ctx:	HDD context.
- *
- * Create RX wakelock.
- *
- * Return: None.
- */
-static void hdd_rx_wake_lock_create(struct hdd_context *hdd_ctx)
-{
-	qdf_wake_lock_create(&hdd_ctx->rx_wake_lock, "qcom_rx_wakelock");
-}
-
-/**
  * hdd_context_deinit() - Deinitialize HDD context
  * @hdd_ctx:    HDD context.
  *
@@ -8798,8 +8752,6 @@ static int hdd_context_deinit(struct hdd_context *hdd_ctx)
 	wlan_hdd_cfg80211_deinit(hdd_ctx->wiphy);
 
 	hdd_sap_context_destroy(hdd_ctx);
-
-	hdd_rx_wake_lock_destroy(hdd_ctx);
 
 	hdd_scan_context_destroy(hdd_ctx);
 
@@ -10071,6 +10023,7 @@ void hdd_adapter_feature_update_work_deinit(struct hdd_adapter *adapter)
 	hdd_exit();
 }
 
+#ifdef WLAN_DEBUG
 static uint8_t *convert_level_to_string(uint32_t level)
 {
 	switch (level) {
@@ -10142,6 +10095,7 @@ void wlan_hdd_display_tx_rx_histogram(struct hdd_context *hdd_ctx)
 				"HIGH" : "LOW");
 	}
 }
+#endif
 
 /**
  * wlan_hdd_clear_tx_rx_histogram() - clear tx rx histogram
@@ -10259,6 +10213,7 @@ hdd_display_netif_queue_history_compact(struct hdd_context *hdd_ctx)
 static void
 wlan_hdd_display_adapter_netif_queue_stats(struct hdd_adapter *adapter)
 {
+#ifdef WLAN_DEBUG
 	int i;
 	qdf_time_t total, pause, unpause, curr_time, delta;
 	struct hdd_netif_queue_history *q_hist_ptr;
@@ -10330,6 +10285,7 @@ wlan_hdd_display_adapter_netif_queue_stats(struct hdd_adapter *adapter)
 				   adapter->queue_oper_history[i].pause_map,
 				   q_status_buf);
 	}
+#endif
 }
 
 void
@@ -11259,8 +11215,6 @@ static int hdd_context_init(struct hdd_context *hdd_ctx)
 	if (ret)
 		goto list_destroy;
 
-	hdd_rx_wake_lock_create(hdd_ctx);
-
 	ret = hdd_sap_context_init(hdd_ctx);
 	if (ret)
 		goto scan_destroy;
@@ -11284,7 +11238,6 @@ sap_destroy:
 
 scan_destroy:
 	hdd_scan_context_destroy(hdd_ctx);
-	hdd_rx_wake_lock_destroy(hdd_ctx);
 list_destroy:
 	qdf_list_destroy(&hdd_ctx->hdd_adapters);
 
@@ -15514,7 +15467,7 @@ static ssize_t wlan_hdd_state_ctrl_param_write(struct file *filp,
 	}
 
 	if (strncmp(buf, wlan_on_str, strlen(wlan_on_str)) == 0)
-		pr_info("Wifi Turning On from UI\n");
+		pr_debug("Wifi Turning On from UI\n");
 
 	if (strncmp(buf, wlan_on_str, strlen(wlan_on_str)) != 0) {
 		pr_err("Invalid value received from framework");
@@ -15610,7 +15563,7 @@ static int  wlan_hdd_state_ctrl_param_create(void)
 		goto cdev_add_err;
 	}
 
-	pr_info("wlan_hdd_state %s major(%d) initialized",
+	pr_debug("wlan_hdd_state %s major(%d) initialized",
 		WLAN_MODULE_NAME, wlan_hdd_state_major);
 
 	return 0;
@@ -15632,7 +15585,7 @@ static void wlan_hdd_state_ctrl_param_destroy(void)
 	class_destroy(class);
 	unregister_chrdev_region(device, dev_num);
 
-	pr_info("Device node unregistered");
+	pr_debug("Device node unregistered");
 }
 
 /**
@@ -16453,7 +16406,7 @@ static void hdd_driver_unload(void)
 	QDF_STATUS status;
 	void *hif_ctx;
 
-	pr_info("%s: Unloading driver v%s\n", WLAN_MODULE_NAME,
+	pr_debug("%s: Unloading driver v%s\n", WLAN_MODULE_NAME,
 		QWLAN_VERSIONSTR);
 
 	/*
@@ -16527,133 +16480,6 @@ static void hdd_driver_unload(void)
 	hdd_qdf_deinit();
 }
 
-#ifndef MODULE
-/**
- * wlan_boot_cb() - Wlan boot callback
- * @kobj:      object whose directory we're creating the link in.
- * @attr:      attribute the user is interacting with
- * @buff:      the buffer containing the user data
- * @count:     number of bytes in the buffer
- *
- * This callback is invoked when the fs is ready to start the
- * wlan driver initialization.
- *
- * Return: 'count' on success or a negative error code in case of failure
- */
-static ssize_t wlan_boot_cb(struct kobject *kobj,
-			    struct kobj_attribute *attr,
-			    const char *buf,
-			    size_t count)
-{
-
-	if (wlan_loader->loaded_state) {
-		hdd_err("wlan driver already initialized");
-		return -EALREADY;
-	}
-
-	if (hdd_driver_load())
-		return -EIO;
-
-	wlan_loader->loaded_state = MODULE_INITIALIZED;
-
-	return count;
-}
-
-/**
- * hdd_sysfs_cleanup() - cleanup sysfs
- *
- * Return: None
- *
- */
-static void hdd_sysfs_cleanup(void)
-{
-	/* remove from group */
-	if (wlan_loader->boot_wlan_obj && wlan_loader->attr_group)
-		sysfs_remove_group(wlan_loader->boot_wlan_obj,
-				   wlan_loader->attr_group);
-
-	/* unlink the object from parent */
-	kobject_del(wlan_loader->boot_wlan_obj);
-
-	/* free the object */
-	kobject_put(wlan_loader->boot_wlan_obj);
-
-	kfree(wlan_loader->attr_group);
-	kfree(wlan_loader);
-
-	wlan_loader = NULL;
-}
-
-/**
- * wlan_init_sysfs() - Creates the sysfs to be invoked when the fs is
- * ready
- *
- * This is creates the syfs entry boot_wlan. Which shall be invoked
- * when the filesystem is ready.
- *
- * QDF API cannot be used here since this function is called even before
- * initializing WLAN driver.
- *
- * Return: 0 for success, errno on failure
- */
-static int wlan_init_sysfs(void)
-{
-	int ret = -ENOMEM;
-
-	wlan_loader = kzalloc(sizeof(*wlan_loader), GFP_KERNEL);
-	if (!wlan_loader)
-		return -ENOMEM;
-
-	wlan_loader->boot_wlan_obj = NULL;
-	wlan_loader->attr_group = kzalloc(sizeof(*(wlan_loader->attr_group)),
-					  GFP_KERNEL);
-	if (!wlan_loader->attr_group)
-		goto error_return;
-
-	wlan_loader->loaded_state = 0;
-	wlan_loader->attr_group->attrs = attrs;
-
-	wlan_loader->boot_wlan_obj = kobject_create_and_add(WLAN_LOADER_NAME,
-							    kernel_kobj);
-	if (!wlan_loader->boot_wlan_obj) {
-		hdd_err("sysfs create and add failed");
-		goto error_return;
-	}
-
-	ret = sysfs_create_group(wlan_loader->boot_wlan_obj,
-				 wlan_loader->attr_group);
-	if (ret) {
-		hdd_err("sysfs create group failed; errno:%d", ret);
-		goto error_return;
-	}
-
-	return 0;
-
-error_return:
-	hdd_sysfs_cleanup();
-
-	return ret;
-}
-
-/**
- * wlan_deinit_sysfs() - Removes the sysfs created to initialize the wlan
- *
- * Return: 0 on success or errno on failure
- */
-static int wlan_deinit_sysfs(void)
-{
-	if (!wlan_loader) {
-		hdd_err("wlan_loader is null");
-		return -EINVAL;
-	}
-
-	hdd_sysfs_cleanup();
-	return 0;
-}
-
-#endif /* MODULE */
-
-#ifdef MODULE
 /**
  * hdd_module_init() - Module init helper
  *
@@ -16661,28 +16487,14 @@ static int wlan_deinit_sysfs(void)
  *
  * Return: 0 for success, errno on failure
  */
-static int hdd_module_init(void)
+static int __init hdd_module_init(void)
 {
 	if (hdd_driver_load())
 		return -EINVAL;
 
 	return 0;
 }
-#else
-static int __init hdd_module_init(void)
-{
-	int ret = -EINVAL;
 
-	ret = wlan_init_sysfs();
-	if (ret)
-		hdd_err("Failed to create sysfs entry");
-
-	return ret;
-}
-#endif
-
-
-#ifdef MODULE
 /**
  * hdd_module_exit() - Exit function
  *
@@ -16694,13 +16506,6 @@ static void __exit hdd_module_exit(void)
 {
 	hdd_driver_unload();
 }
-#else
-static void __exit hdd_module_exit(void)
-{
-	hdd_driver_unload();
-	wlan_deinit_sysfs();
-}
-#endif
 
 static int fwpath_changed_handler(const char *kmessage,
 				  const struct kernel_param *kp)

@@ -17,21 +17,22 @@
 #include "msm_vidc_debug.h"
 #include "vidc_hfi_api.h"
 
-int msm_vidc_debug = VIDC_ERR | VIDC_WARN | VIDC_FW;
+int msm_vidc_debug = 0;
 EXPORT_SYMBOL(msm_vidc_debug);
 
-int msm_vidc_debug_out = VIDC_OUT_PRINTK;
+int msm_vidc_debug_out = 0;
 EXPORT_SYMBOL(msm_vidc_debug_out);
 
 /* 0x18 = HFI_DEBUG_MSG_FATAL | HFI_DEBUG_MSG_ERROR */
 int msm_vidc_fw_debug = 0x18;
-int msm_vidc_fw_debug_mode = 1;
+int msm_vidc_fw_debug_mode = 0;
 int msm_vidc_fw_low_power_mode = 1;
 bool msm_vidc_fw_coverage = !true;
 bool msm_vidc_thermal_mitigation_disabled = !true;
 int msm_vidc_clock_voting = !1;
 bool msm_vidc_syscache_disable = !true;
 
+#if 0
 #define MAX_DBG_BUF_SIZE 4096
 
 #define DYNAMIC_BUF_OWNER(__binfo) ({ \
@@ -179,7 +180,7 @@ static ssize_t debug_level_write(struct file *filp, const char __user *buf,
 
 	/* filter partial writes and invalid commands */
 	if (*ppos != 0 || count >= sizeof(kbuf) || count == 0) {
-		dprintk(VIDC_ERR, "returning error - pos %lld, count %ld\n",
+		dprintk(VIDC_ERR, "returning error - pos %lld, count %lu\n",
 			*ppos, count);
 		rc = -EINVAL;
 	}
@@ -603,3 +604,4 @@ int msm_vidc_check_ratelimit(void)
 	return __ratelimit(&_rs);
 }
 
+#endif

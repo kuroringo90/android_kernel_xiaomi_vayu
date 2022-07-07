@@ -290,7 +290,7 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	struct vm_area_struct *vma = NULL;
 	struct mm_struct *mm = bprm->mm;
 
-	bprm->vma = vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);
+	bprm->vma = vma = vm_area_alloc();
 	if (!vma)
 		return -ENOMEM;
 
@@ -326,7 +326,7 @@ err:
 	up_write(&mm->mmap_sem);
 err_free:
 	bprm->vma = NULL;
-	kmem_cache_free(vm_area_cachep, vma);
+	vm_area_free(vma);
 	return err;
 }
 
@@ -786,6 +786,8 @@ int setup_arg_pages(struct linux_binprm *bprm,
 	ret = expand_stack(vma, stack_base);
 	if (ret)
 		ret = -EFAULT;
+	else
+		current->mm->stack_vma = vma;
 
 out_unlock:
 	up_write(&mm->mmap_sem);
@@ -1928,7 +1930,7 @@ void set_dumpable(struct mm_struct *mm, int value)
 		return;
 
 	do {
-		old = ACCESS_ONCE(mm->flags);
+		old = READ_ONCE(mm->flags);
 		new = (old & ~MMF_DUMPABLE_MASK) | value;
 	} while (cmpxchg(&mm->flags, old, new) != old);
 }

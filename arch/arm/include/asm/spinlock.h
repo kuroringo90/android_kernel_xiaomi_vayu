@@ -74,7 +74,7 @@ static inline void arch_spin_lock(arch_spinlock_t *lock)
 
 	while (lockval.tickets.next != lockval.tickets.owner) {
 		wfe();
-		lockval.tickets.owner = ACCESS_ONCE(lock->tickets.owner);
+		lockval.tickets.owner = READ_ONCE(lock->tickets.owner);
 	}
 
 	smp_mb();
@@ -279,9 +279,5 @@ static inline int arch_read_trylock(arch_rwlock_t *rw)
 
 #define arch_read_lock_flags(lock, flags) arch_read_lock(lock)
 #define arch_write_lock_flags(lock, flags) arch_write_lock(lock)
-
-#define arch_spin_relax(lock)	cpu_relax()
-#define arch_read_relax(lock)	cpu_relax()
-#define arch_write_relax(lock)	cpu_relax()
 
 #endif /* __ASM_SPINLOCK_H */

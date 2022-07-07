@@ -560,16 +560,9 @@ void __tcp_v4_send_check(struct sk_buff *skb, __be32 saddr, __be32 daddr)
 {
 	struct tcphdr *th = tcp_hdr(skb);
 
-	if (skb->ip_summed == CHECKSUM_PARTIAL) {
-		th->check = ~tcp_v4_check(skb->len, saddr, daddr, 0);
-		skb->csum_start = skb_transport_header(skb) - skb->head;
-		skb->csum_offset = offsetof(struct tcphdr, check);
-	} else {
-		th->check = tcp_v4_check(skb->len, saddr, daddr,
-					 csum_partial(th,
-						      th->doff << 2,
-						      skb->csum));
-	}
+	th->check = ~tcp_v4_check(skb->len, saddr, daddr, 0);
+	skb->csum_start = skb_transport_header(skb) - skb->head;
+	skb->csum_offset = offsetof(struct tcphdr, check);
 }
 
 /* This routine computes an IPv4 TCP checksum. */
@@ -1559,13 +1552,13 @@ int tcp_v4_early_demux(struct sk_buff *skb)
 
 bool tcp_add_backlog(struct sock *sk, struct sk_buff *skb)
 {
-	u32 limit = sk->sk_rcvbuf + sk->sk_sndbuf;
+        u32 limit;
 
 	/* Only socket owner can try to collapse/prune rx queues
 	 * to reduce memory overhead, so add a little headroom here.
 	 * Few sockets backlog are possibly concurrently non empty.
 	 */
-	limit += 64*1024;
+	limit = READ_ONCE(sk->sk_rcvbuf) + READ_ONCE(sk->sk_sndbuf) + 64*1024;
 
 	/* In case all data was pulled from skb frags (in __pskb_pull_tail()),
 	 * we can fix skb->truesize to its real value to avoid future drops.
@@ -1743,6 +1736,7 @@ process:
 
 	sk_incoming_cpu_update(sk);
 
+	sk_defer_free_flush(sk);
 	bh_lock_sock_nested(sk);
 	tcp_segs_in(tcp_sk(sk), skb);
 	ret = 0;
@@ -2502,7 +2496,7 @@ static int __net_init tcp_sk_init(struct net *net)
 
 	net->ipv4.sysctl_tcp_syn_retries = TCP_SYN_RETRIES;
 	net->ipv4.sysctl_tcp_synack_retries = TCP_SYNACK_RETRIES;
-	net->ipv4.sysctl_tcp_syncookies = 1;
+	net->ipv4.sysctl_tcp_syncookies = 0;
 	net->ipv4.sysctl_tcp_reordering = TCP_FASTRETRANS_THRESH;
 	net->ipv4.sysctl_tcp_retries1 = TCP_RETR1;
 	net->ipv4.sysctl_tcp_retries2 = TCP_RETR2;
