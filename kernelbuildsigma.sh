@@ -1,7 +1,7 @@
 #!/usr/bin/bash 
 
 #CLANG_DIR="/home/venom98/ste/kernel/toolchains/clang-weebx/bin"
-CLANG_DIR="/home/ste/kernel/toolchains/clang-aosp/bin"
+CLANG_DIR="/home/ste/kernel/toolchains/clang-r487747/bin"
 GCC_DIR="/home/ste/kernel/toolchains/gcc/bin"
 GCC32_DIR="/home/ste/kernel/toolchains/gcc32/bin"
 BLDHST="PerryRice"
